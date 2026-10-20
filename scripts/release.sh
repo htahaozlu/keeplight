@@ -13,6 +13,9 @@
 # Environment
 #   SIGN_IDENTITY           codesign identity (default "Developer ID Application: Hasan Taha Ozlu (DQJT5BCZCM)")
 #   NOTARY_PROFILE          notarytool keychain profile (default snapline-notary)
+#   NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER
+#                           an App Store Connect API key (.p8 path, key ID, issuer ID) used directly
+#                           instead of a keychain profile; nothing is stored
 #   KEEPLIGHT_ALLOW_DIRTY=1 build from a tree with uncommitted changes (never for a published release)
 #   KEEPLIGHT_SKIP_TESTS=1  skip `swift test` (never for a published release)
 #
@@ -31,6 +34,17 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: Hasan Taha Ozlu (DQJT5BCZCM)}"
 PROFILE="${NOTARY_PROFILE:-snapline-notary}"
+# notarytool's credentials: the API key itself when all three are given, else the keychain profile.
+if [ -n "${NOTARY_KEY:-}" ] || [ -n "${NOTARY_KEY_ID:-}" ] || [ -n "${NOTARY_ISSUER:-}" ]; then
+    [ -n "${NOTARY_KEY:-}" ] && [ -n "${NOTARY_KEY_ID:-}" ] && [ -n "${NOTARY_ISSUER:-}" ] \
+        || die "NOTARY_KEY, NOTARY_KEY_ID and NOTARY_ISSUER go together"
+    [ -f "$NOTARY_KEY" ] || die "no API key file at $NOTARY_KEY"
+    NOTARY_AUTH=(--key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+    NOTARY_WHAT="API key $NOTARY_KEY_ID"
+else
+    NOTARY_AUTH=(--keychain-profile "$PROFILE")
+    NOTARY_WHAT="keychain profile '$PROFILE'"
+fi
 TEAM="$(sed -nE 's/.*\(([A-Z0-9]{10})\)$/\1/p' <<<"$SIGN_IDENTITY")"
 [ -n "$TEAM" ] || die "SIGN_IDENTITY must end in its team ID, e.g. \"Developer ID Application: Name (ABCDE12345)\""
 
@@ -76,9 +90,9 @@ fi
 
 security find-identity -v -p codesigning | grep -qF "\"$SIGN_IDENTITY\"" \
     || die "no valid codesigning identity \"$SIGN_IDENTITY\" in the keychain"
-log "notary profile '$PROFILE' (asks Apple once, before anything is built)"
-xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null \
-    || die "notarytool cannot use keychain profile '$PROFILE' (xcrun notarytool store-credentials $PROFILE …)"
+log "notary credentials: $NOTARY_WHAT (asks Apple once, before anything is built)"
+xcrun notarytool history "${NOTARY_AUTH[@]}" >/dev/null \
+    || die "notarytool cannot use $NOTARY_WHAT (xcrun notarytool store-credentials $PROFILE …, or NOTARY_KEY/NOTARY_KEY_ID/NOTARY_ISSUER)"
 
 rm -f "$DMG" "$SHA" "$CASK" "$OUT"/notary-*.json
 
@@ -130,11 +144,11 @@ fi
 notarize() {   # <file> <label>
     local json="$OUT/notary-$2.json" status id
     log "notarize $2 (uploads to Apple, waits for the verdict)"
-    xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait --output-format json > "$json" || true
+    xcrun notarytool submit "$1" "${NOTARY_AUTH[@]}" --wait --output-format json > "$json" || true
     status="$(plutil -extract status raw -o - "$json" 2>/dev/null || echo "no answer")"
     id="$(plutil -extract id raw -o - "$json" 2>/dev/null || true)"
     if [ -n "$id" ]; then
-        xcrun notarytool log "$id" --keychain-profile "$PROFILE" "$OUT/notary-$2-log.json" >/dev/null || true
+        xcrun notarytool log "$id" "${NOTARY_AUTH[@]}" "$OUT/notary-$2-log.json" >/dev/null || true
     fi
     [ "$status" = "Accepted" ] || die "notarization of $2: $status (details: $OUT/notary-$2-log.json)"
     printf '  %s accepted (%s)\n' "$2" "$id"
