@@ -292,11 +292,18 @@ final class AppModel {
         items.contains { $0.id != item.id && $0.isPhysical && !$0.info.isMirrorTarget }
     }
 
-    /// Selector the CLI resolves to this display: its quoted name when unique, else `id:N`.
+    /// Selector the CLI resolves to this display: its name when unique, else `id:N`. The name comes
+    /// from the monitor's EDID, so it is single-quoted for the shell (an embedded `'` becomes
+    /// `'\''`): pasting the copied command must never run `$(…)` or backticks hidden in a name.
     func cliSelector(_ info: DisplayInfo) -> String {
         let needle = info.name.lowercased()
         let matches = items.filter { $0.info.name.lowercased().contains(needle) }
-        return matches.count == 1 ? "\"\(info.name)\"" : "id:\(info.id)"
+        return matches.count == 1 ? Self.shellQuoted(info.name) : "id:\(info.id)"
+    }
+
+    /// `text` as one POSIX shell word.
+    nonisolated static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     func markOwnChange(_ seconds: TimeInterval = 3) {
